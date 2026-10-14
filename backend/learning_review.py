@@ -90,7 +90,7 @@ async def audit_learning(llm, result, snapshot, goal, changed_targets=None):
         '重点检查直接返回类型/副作用所属函数、条件优先级、练习前提与自查一致性、图中数据来源与去向及边条件。核对scope_reason、limitations、objective和background的事实描述；actual_reading_record才是真实读取范围，模型不得声称已读文件未提供。'
         'python_returned_value_flows是静态语法事实：逐项核对创建返回对象的调用发生在前面还是最后，回填已有对象不等于最后再次调用创建函数。'
         'python_direct_call_owners标明语句直接属于哪个函数，不能把调用者的状态修改归给被调用者（也不能反过来）。'
-        '逐单元核对，不要让形式问题遮蔽事实错误。特别检查“函数签名中有某参数”“一定/只/恒”等断言和生成器调用与实际迭代的区别。'
+        '核对所有转换动词是否真的出现：resolve 不等于去重，路径值不必然是目录，拼接一个字段不等于提供完整返回对象的全部输入。不要以摘要简化为由放过添加的事实。逐单元核对，不要让形式问题遮蔽事实错误。特别检查“函数签名中有某参数”“一定/只/恒”等断言和生成器调用与实际迭代的区别。'
         '禁止替成果补前提后判正确：逐字保留原文限定条件。未传入参数不等于对应配置为空；若原文说一定走某分支或不检查配置，必须检查所有更早的if/elif及配置赋值，寻找反例，不能把原文改成带额外条件的正确句子。'
         '引用包含相邻签名、空行或少量上下文不是错误；只要范围内确有支持结论的语句，不得因起止行不够紧凑退回。'
         'python_deferred_bodies是静态语法事实。图若把生成器函数体执行放在消费者开始迭代之前，是实质时序错误；核对消费for语句与yield所在函数。'
@@ -134,15 +134,20 @@ async def audit_learning(llm, result, snapshot, goal, changed_targets=None):
     if not findings:
         return {'passed': True, 'outcome': 'no_issues_found', 'summary': '自动审核未发现问题（不是人工验收）：' + audit['summary'], 'issues': [], 'repair_targets': [],
                 'findings': [], 'audit': audit, 'decisions': []}
-    # A fresh reading sees only original units and source, never the proposed
-    # criticisms, so it cannot simply echo an earlier reviewer's explanation.
+    # Reuse the existing second call to adjudicate the original doubts. An empty
+    # findings array alone is not evidence for dismissal. Closing requires an
+    # explicit reason plus a verified source quote for that numbered finding.
     suspected = {f['target']: catalog[f['target']] for f in findings}
     independent_finding = create_model('LearningFinding', __base__=Finding,
                                       target=(Literal[tuple(suspected)], ...))
     independent_schema = create_model('LearningAudit', __base__=LearningAudit,
-                                      findings=(list[independent_finding], Field(max_length=8)))
+                                      findings=(list[independent_finding], Field(max_length=8)),
+                                      resolutions=(list[Decision], Field(default_factory=list, max_length=4)))
     independent = (await llm.ask('Reviewer Agent',
-        '独立核对下面完整的成果单元，不参考其他审核者的结论。只有原文明示的肯定陈述与源码矛盾才退回。'
+        '独立对照源码核对完整成果单元，不把初审问题当作事实。只有原文明示的肯定陈述与源码矛盾才退回。'
+        'original_findings是待裁决疑点。resolutions可逐项给confirmed、dismissed或uncertain，编号必须对应finding_id。'
+        'dismissed必须说明原疑点为何不成立、原成果何以有据，并给逐字源码evidence和单行source_quote；仅未重现或没有发现问题不足以关闭，证据不足选uncertain。'
+        '引用可由多段共同支撑；引用范围含相邻语句不构成错误，只要实际支持语句位于任一引用范围内。'
         '先从完整句子确定主语：不要把相邻函数的返回或yield归到另一个函数。'
         '核对python_returned_value_flows：对象提前创建、随后字段回填、最后return这三步不能合并为末尾调用创建函数。'
         '核对python_direct_call_owners给出的直接归属；不得把调用者语句归给被调用函数。'
@@ -153,23 +158,39 @@ async def audit_learning(llm, result, snapshot, goal, changed_targets=None):
         '对真实错误返回精确target、逐字quote、简洁problem、反驳该断言的evidence与单行source_quote。'
         '没有实质矛盾则findings为空。图的标题或条件边明确限定主分支时，不要求扩展到所有分支。'
         'source_quote只摘一行源码，不带缩进或行号；summary不超过80字。',
-        {'goal': goal, 'units': suspected, 'diagram_semantics': result.get('diagram_semantics', 'execution_flow'), 'independent_check': True, 'repair_check': changed_targets is not None,
+        {'goal': goal, 'units': suspected, 'original_findings': [dict(f, finding_id=i) for i,f in enumerate(findings,1)], 'diagram_semantics': result.get('diagram_semantics', 'execution_flow'), 'independent_check': True, 'repair_check': changed_targets is not None,
          **learning_source_context(snapshot, {'units': suspected, 'references': [f['evidence'] for f in findings]})},
         independent_schema)).model_dump()
     errors = finding_errors(independent['findings'], suspected, snapshot)
+    resolutions = independent.get('resolutions', [])
+    ids = [d['finding_id'] for d in resolutions]
+    if len(ids)!=len(set(ids)) or any(not 1<=i<=len(findings) for i in ids):
+        errors.append('复核裁决编号无效或重复')
+    if any(not source_quote_valid(d,snapshot) for d in resolutions):
+        errors.append('关闭或确认疑点的依据不在实际已读引用中')
     if errors:
         return {'passed': False, 'outcome': 'invalid_audit', 'summary': '独立复核无法绑定原文或源码', 'issues': errors,
                 'repair_targets': [], 'findings': [], 'audit': audit, 'independent_audit': independent,
                 'validation_failed': True, 'decisions': []}
     retained = independent['findings']
+    for d in resolutions:
+        original = findings[d['finding_id']-1]
+        if d['verdict']=='confirmed' and not any(g['target']==original['target'] for g in retained):
+            retained.append(original)
     decisions = [dict(target=f['target'], quote=f['quote'], verdict=(
         'confirmed' if any(g['target'] == f['target'] and (g['quote'] in f['quote'] or f['quote'] in g['quote']) for g in retained)
         else 'uncertain'), reason=('两次均定位到同一原文问题' if any(g['target'] == f['target'] and (g['quote'] in f['quote'] or f['quote'] in g['quote']) for g in retained)
                                  else '原疑点未重现，但没有针对原疑点的有据反证，不能关闭'), evidence=f['evidence']) for f in findings]
     disputed = [f for f,d in zip(findings,decisions) if d['verdict']=='uncertain']
-    return {'passed': False, 'outcome': 'disputed' if disputed else 'confirmed_errors',
+    for i,decision in enumerate(decisions,1):
+        closure = next((d for d in resolutions if d['finding_id']==i and d['verdict']=='dismissed'),None)
+        if decision['verdict']=='uncertain' and closure and not any(g['target']==decision['target'] for g in retained):
+            decision.update(closure)
+    disputed = [f for f,d in zip(findings,decisions) if d['verdict']=='uncertain']
+    closed = not disputed and not retained
+    return {'passed': closed, 'outcome': 'not_reproduced_with_evidence' if closed else 'disputed' if disputed else 'confirmed_errors',
             'unresolved_findings': disputed,
-            'summary': '原疑点未重现，缺少关闭依据，保留争议并需关注' if disputed else '独立复核确认错误，需有限修正',
+            'summary': '原疑点未重现，自动复核提供了有源码依据的关闭理由；不代表人工验收或内容绝对正确' if closed else '原疑点未重现，缺少关闭依据，保留争议并需关注' if disputed else '独立复核确认错误，需有限修正',
             'issues': [f"{f['target']}：{f['problem']}" for f in retained + disputed],
             'repair_targets': list(dict.fromkeys(f['target'] for f in retained)), 'findings': retained,
             'audit': audit, 'independent_audit': independent, 'decisions': decisions}

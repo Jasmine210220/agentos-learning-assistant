@@ -31,6 +31,9 @@ async def main():
     settings.configure(Path(os.environ['APPDATA']) / 'agentos-lite/data')
     if not settings.current()['key']:
         raise SystemExit('No configured model credential; live acceptance blocked')
+    runtime = Path(os.environ.get('AGENTOS_ELECTRON', str(Path(__file__).resolve().parents[1]/'node_modules/electron/dist/electron.exe')))
+    if not runtime.is_file():
+        raise SystemExit('Electron renderer missing; run node node_modules/electron/install.js before live calls')
     store = Store(Path(args.output))
     task = store.create(TaskInput(kind='learn', repository=args.repository, ref=args.ref,
         goal=args.goal, learner_background=args.background).model_dump())

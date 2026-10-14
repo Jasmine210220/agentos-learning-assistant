@@ -47,6 +47,7 @@ async def main():
     metadata = provenance()
     baseline,snapshot = fixture()
     cases=[('correct',None),('wrong_return','get_module_data_from_path 返回 ImportData。'),('wrong_owner','get_module_data_from_path 内部执行 sys.path.insert(0, ...) 修改导入路径。'),
+           ('wrong_transform','get_module_data_from_path 通过去重 extra_sys_path 后返回 ModuleData。'),
            ('condition_correct','未提供 path/app/entrypoint 时，还需检查 config.entrypoint，只有它也为假才调用无参 get_import_data()。'),
            ('condition_missing','未提供 path/app/entrypoint 时，一定调用无参 get_import_data()，不检查配置。')]
     outcomes=[]

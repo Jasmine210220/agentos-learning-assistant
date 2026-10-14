@@ -21,7 +21,7 @@ export type Result = {
   dataset?:{columns:string[];rows:Record<string,string|number|null>[];source:string;raw:string};
   chart?:{title:string;kind:string;x:string;y:string[];unit:string;source:string;rendered:boolean};
   mermaid?: string; rendered?: boolean;
-  review?: {outcome?:string; passed: boolean; summary: string; issues: string[];findings?:{target:string;quote:string;problem:string;evidence:Evidence[]}[];decisions?:{target:string;quote:string;verdict:string}[];independent_audit?:{summary:string}};
+  review?: {outcome?:string; passed: boolean; summary: string; issues: string[];findings?:{target:string;quote:string;problem:string;evidence:Evidence[]}[];decisions?:{target:string;quote:string;verdict:string;reason?:string;evidence?:Evidence[]}[];independent_audit?:{summary:string}};
   checks?: {evidence_valid: boolean; diagram_rendered: boolean; errors: string[]; round: number};
 };
 export type Event = { id: number; time: string; role: string; kind: string; summary: string; details: Record<string, unknown> };

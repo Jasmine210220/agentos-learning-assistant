@@ -79,3 +79,36 @@ def test_unsupported_sequence_stops_before_model_call(tmp_path,goal):
     assert final['status']=='needs_attention'
     assert '不提供调用顺序图或执行时序图' in final['error']
     assert 'snapshot' not in final['result']
+
+
+@pytest.mark.parametrize('valid',[True,False])
+def test_dispute_closure_requires_bound_source_and_reason(valid):
+    class Closure:
+        calls=0
+        async def ask(self,role,instruction,data,schema):
+            self.calls+=1
+            if not data.get('independent_check'):
+                return schema(summary='初审疑点',findings=[FINDING])
+            assert data['original_findings'][0]['finding_id']==1
+            return schema(summary='原疑点未重现',findings=[],resolutions=[dict(finding_id=1,verdict='dismissed',
+                reason='引用范围内的 return 支持原陈述，初审混淆了练习提问与事实断言。',
+                evidence=FINDING['evidence'],source_quote="return 'hello'" if valid else 'return imaginary')])
+    model=Closure()
+    review=asyncio.run(audit_learning(model,result(),SNAPSHOT,'理解入口'))
+    assert model.calls==2
+    assert review['passed'] is valid
+    assert review['outcome']==('not_reproduced_with_evidence' if valid else 'invalid_audit')
+    if valid:
+        assert review['decisions'][0]['reason'] and review['decisions'][0]['evidence']
+
+
+def test_report_preserves_data_path_title_and_program_reading_record():
+    from backend.learning import report_learning
+    value=result()
+    value['snapshot']=SNAPSHOT
+    value['diagram']['title']='数据传递图（仅条件 A 成立）'
+    value['diagram_semantics']='data_flow'
+    report=report_learning(dict(repository=SNAPSHOT['repository'],goal='read',status='succeeded'),value)
+    assert '数据传递图（仅条件 A 成立）' in report
+    assert 'main.py：1-4' in report
+    assert '不代表人工验收' in report
