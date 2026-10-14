@@ -89,7 +89,8 @@ async function api(route) {
       assert.equal(task.result.learning.exercises.length,3);
       assert.equal(task.result.snapshot.commit,ref);
       assert.equal(task.repository,repository);
-      await page.getByRole('button',{name:'查看成果',exact:true}).first().click();
+      // The top-bar button toggles an already open panel; the message card opens it.
+      await page.locator('.artifact-card').first().click();
       for (const tab of ['解读','学习','数据传递图','来源','审核','协作']) {
         await page.getByRole('button',{name:tab,exact:true}).click();
         if (tab==='数据传递图') await page.getByRole('img',{name:'根据已读取代码生成的数据传递图'}).waitFor();
@@ -120,7 +121,7 @@ async function api(route) {
       assert((await api('/health')).configured,'DPAPI model setting not restored');
       const chats=await api('/chats');
       await page.locator(`[data-chat-id="${chats[0].id}"]`).click();
-      await page.getByRole('button',{name:'查看成果',exact:true}).first().click();
+      await page.locator('.artifact-card').first().click();
       await page.getByRole('button',{name:'学习',exact:true}).click();
       await page.getByText('历史任务',{exact:true}).waitFor();
       assert.equal(await page.locator('.task-progress .spin').count(),0);
