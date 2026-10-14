@@ -1,0 +1,41 @@
+const {_electron:electron}=require('playwright');
+const assert=require('node:assert/strict');
+const path=require('node:path');
+const fs=require('node:fs');
+(async()=>{
+ const root=path.resolve(__dirname,'..');const env={...process.env,AGENTOS_DATA_DIR:path.join(root,'test-output/improvement-ui'),AGENTOS_PYTHON:path.join(root,'.venv/Scripts/python.exe')};delete env.ELECTRON_RUN_AS_NODE;
+ const app=await electron.launch({...(process.env.AGENTOS_TEST_EXE?{executablePath:process.env.AGENTOS_TEST_EXE,args:[]}:{args:[root]}),cwd:root,env,timeout:60000});const proc=app.process();
+ try{
+  const page=await app.firstWindow();const errors=[];page.on('pageerror',e=>errors.push(e.message));
+  await page.locator('.chat-item').first().click();await page.locator('.artifact-card').first().click();
+  const first=page.locator('.improvement-card').filter({has:page.getByRole('button',{name:'应用到副本',exact:true})}).first();
+  await first.getByText('修改差异',{exact:true}).click();
+  assert((await first.locator('.diff pre').innerText()).includes('get('));
+  await page.screenshot({path:path.join(root,'test-output/screenshots/improvement-v05.png'),fullPage:true});
+  await first.getByRole('button',{name:'应用到副本',exact:true}).click();
+  const editor=page.getByRole('textbox',{name:'代码副本'});await editor.waitFor();
+  assert((await editor.inputValue()).includes('get('));
+  const exportPath=path.join(root,'test-output/improvement-export-'+Date.now()+'.zip');
+  await app.evaluate(({dialog},filePath)=>{dialog.showSaveDialog=async()=>({canceled:false,filePath});},exportPath);
+  await page.getByRole('button',{name:'导出文件副本',exact:true}).click();
+  for(let attempt=0;attempt<50&&!fs.existsSync(exportPath);attempt++)await page.waitForTimeout(100);
+  assert(fs.existsSync(exportPath),'ZIP export must create a file');assert(fs.readFileSync(exportPath).subarray(0,2).equals(Buffer.from('PK')));
+  await page.screenshot({path:path.join(root,'test-output/screenshots/improvement-editor-v05.png'),fullPage:true});
+  await page.getByRole('button',{name:'关闭编辑器'}).click();
+  const complex=page.locator('.improvement-card').filter({hasText:'交给开发工具实施'}).first();
+  await complex.getByText('给 Codex 的提示词',{exact:true}).click();
+  const prompt=await complex.locator('textarea').inputValue();assert(prompt.includes('app.py')&&prompt.includes('验收要求'));
+  await complex.getByRole('button',{name:'复制实施提示词',exact:true}).click();
+  await complex.getByRole('button',{name:'已复制',exact:true}).waitFor();
+  assert.equal((await app.evaluate(({clipboard})=>clipboard.readText())).replace(/\r\n/g,'\n'),prompt);
+  await page.screenshot({path:path.join(root,'test-output/screenshots/improvement-prompt-v05.png'),fullPage:true});
+  await page.getByRole('button',{name:'还原全部修改',exact:true}).click();await editor.waitFor();
+  assert((await editor.inputValue()).includes('item["price"]'));
+  await page.getByRole('button',{name:'关闭编辑器'}).click();
+  await page.getByRole('button',{name:'新对话',exact:true}).click();
+  await page.locator('input[type=file]').first().setInputFiles({name:'sample.py',mimeType:'text/plain',buffer:Buffer.from('print("example")\n')});
+  await page.getByRole('button',{name:'对比并改进',exact:true}).click();
+  assert((await page.getByRole('textbox',{name:'消息'}).inputValue()).includes('Codex'));
+  assert.deepEqual(errors,[]);console.log(JSON.stringify({ok:true,checks:['proposal diff','apply copy','export ZIP','Codex prompt clipboard','restore copy','import comparison entry','no renderer errors']}));
+ }finally{await Promise.race([app.close(),new Promise(r=>setTimeout(r,5000))]);if(proc.exitCode===null)proc.kill();}
+})().catch(e=>{console.error(e);process.exitCode=1;});
