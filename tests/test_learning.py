@@ -5,6 +5,7 @@ from backend.audit import digest
 from backend.chat import Chats
 from backend.learning import learning_errors
 from backend.learning_exercises import exercise_from_focus
+from backend.learning_facts import scope_notes
 from backend.learning_review import LearningAudit, FindingDecisions
 from backend.models import LearningAnalysis, LearningPlan, Diagram, Review, TaskInput, ScopeAssessment
 from backend.store import Store
@@ -15,9 +16,10 @@ from test_backend import SNAPSHOT, ANALYSIS, DIAGRAM, E, CLAIM, reader, renderer
 LEARNING = dict(background='会Python基础', objective='理解hello调用', flow_indices=[1],
     reading_order=[dict(title='入口', reason='先看函数再看调用', module_index=1, concepts=['返回值'], evidence=[E])],
     exercises=[exercise_from_focus({'symbol':'hello','evidence_ids':[1]}, i, [E], SNAPSHOT) for i in range(3)],
-    limitations=['练习未执行'])
+    limitations=scope_notes(SNAPSHOT))
 LEARNING_ANALYSIS = dict(ANALYSIS, goal_answers=[CLAIM], scope_complete=True, scope_reason='入口和函数均已读取', technologies=[dict(CLAIM, title='Python')])
 LEARNING_ANALYSIS['summary'] = CLAIM['explanation']
+LEARNING_ANALYSIS['limitations'] = scope_notes(SNAPSHOT)
 
 
 class Model:

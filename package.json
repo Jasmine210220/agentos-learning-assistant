@@ -1,6 +1,6 @@
 {
   "name": "agentos-lite",
-  "version": "0.6.9",
+  "version": "0.6.10",
   "private": true,
   "description": "有代码依据的 Windows 多 Agent 项目学习助手",
   "main": "electron/main.cjs",
@@ -39,7 +39,7 @@
     ],
     "extraResources": [
       {
-        "from": "backend-dist-v0.6.9",
+        "from": "backend-dist-v0.6.10",
         "to": "backend"
       }
     ],
@@ -51,7 +51,7 @@
       "allowToChangeInstallationDirectory": true
     },
     "directories": {
-      "output": "release-v0.6.9"
+      "output": "release-v0.6.10"
     }
   }
 }

@@ -8,6 +8,8 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from backend.workflow import validate_evidence
 from backend.learning import learning_errors
 from backend.audit import digest
+from backend.learning_facts import validate_return_fields
+from backend.models import Diagram
 
 def structural_checks(task,events,snapshot,workspace):
     result=task.get('result',{})
@@ -25,6 +27,12 @@ def structural_checks(task,events,snapshot,workspace):
             e['details'].get('input_hashes',{}).get(artifact)==digest(result.get(artifact)) for e in events)
     report=workspace/'report.md'
     checks['static_boundary']=report.is_file() and '未运行仓库代码，练习未执行或评分' in report.read_text(encoding='utf-8')
+    if 'source_facts' in result:
+        try:
+            validate_return_fields(Diagram.model_validate(result.get('diagram')), result['source_facts'])
+            checks['return_field_spelling_coverage_only'] = True
+        except (ValueError, TypeError):
+            checks['return_field_spelling_coverage_only'] = False
     return checks
 
 def main():

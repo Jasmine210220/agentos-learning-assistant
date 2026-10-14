@@ -11,6 +11,7 @@ from .llm import learning_source_context, ModelBudgetExceeded
 from .models import LearningAnalysis, LearningPlan, Diagram, Strict, ScopeAssessment
 from .learning_review import audit_learning, repair_learning
 from .learning_exercises import ExerciseFocus, exercise_from_focus
+from .learning_facts import source_facts, scope_notes, validate_return_fields
 from .learning_diagram import validate_diagram_semantics, requests_execution_diagram, DIAGRAM_BOUNDARY, reading_record
 from .learning_reading import select_learning_excerpt, include_route_siblings, trim_adjacent_evidence, analysis_citation_contract, resolve_analysis_citations
 from .workflow import Stopped, select_repository_files, validate_evidence, diagram_source
@@ -81,6 +82,7 @@ async def make_learning(llm, analysis, background, goal, feedback, snapshot):
          'evidence_catalog': [dict(e, id=i) for i,e in enumerate(catalog,1)], 'focus_choices': focus_choices,
          **learning_source_context(snapshot, analysis)}, schema)
     value = draft.model_dump()
+    value['limitations'] = scope_notes(snapshot)
     for item in value['reading_order']:
         item['evidence'] = [catalog[i-1] for i in dict.fromkeys(item.pop('evidence_ids'))]
     focuses = [focus_choices[f['focus_id']-1] for f in value['exercises']]
@@ -106,15 +108,20 @@ def report_learning(task, result):
     for i, exercise in enumerate(learning.get('exercises', []), 1):
         lines += [f"### {i}. {exercise['title']}", exercise['objective'], *['- ' + s for s in exercise['instructions']],
                   '自查条件：', *['- ' + s for s in exercise['acceptance']], *evidence(exercise['evidence'])]
-    lines += ['', '## 范围与限制', reading_record(snapshot), '模型范围判断（待人工核对）：' + analysis.get('scope_reason', ''), *analysis.get('limitations', []), *learning.get('limitations', []),
+    lines += ['', '## 范围与限制', reading_record(snapshot), *scope_notes(snapshot),
               ('本次模型按所选代码段阅读，完整文件仅作为可查看的来源快照。已读范围：' + '；'.join(
                   f["path"] + ' ' + '、'.join(f'{a}-{b}' for a,b in f.get('analysis_ranges', []))
                   for f in snapshot.get('files', []) if f.get('analysis_ranges'))) if snapshot.get('excerpted') else '',
+              ('模型判定的目标缺失（待核对）：' + analysis.get('scope_reason', '')) if analysis.get('scope_complete') is False else '',
               f"读取 {len(snapshot.get('files', []))} 个文件；仅解释已读取范围。", '', '## 审核',
               '自动审核未发现剩余问题（不代表人工验收）' if task['status'] == 'succeeded' else '未完成或未通过', result.get('review', {}).get('summary', ''),
               *result.get('review', {}).get('issues', []), task.get('error') or '', '', '## 数据传递图', result.get('diagram', {}).get('title', ''),
               '箭头表示选定路径中的数据传递，不表示完整调用时序。' if result.get('diagram_semantics') == 'data_flow' else '箭头表示主要调用与控制流程。',
               '```mermaid', result.get('mermaid', ''), '```']
+    lines += ['', '## 返回调用字段的源码记录', '以下仅为已读源码的静态表达式，不代表运行结果或图中关系已获验证。']
+    for fact in result.get('source_facts', []):
+        if fact['kind'] == 'direct_return_call' and fact.get('requested'):
+            lines += [f"### {fact['name']} 返回调用 {fact['callee']}", fact.get('coverage_note',''), *[f"- {f['name']} ← `{f['expression']}`" for f in fact['fields']], *evidence([fact['evidence']])]
     return '\n'.join(lines)
 
 
@@ -195,6 +202,7 @@ async def run_learning(runner, task_id):
                 store.save_json(task_id, 'snapshot.json', snapshot)
                 result['snapshot'] = {**snapshot, 'files': [{k: v for k, v in f.items() if k != 'content'} for f in snapshot['files']]}
                 sources = learning_source_context(snapshot)
+                result['source_facts'] = source_facts(snapshot, task['goal'])
                 save()
                 feedback = []
                 for attempt in range(min(1, runner.max_repairs) + 1):
@@ -216,6 +224,9 @@ async def run_learning(runner, task_id):
                         LearningPlan.model_validate(candidate['learning'])
                         candidate_diagram = Diagram.model_validate(candidate['diagram'])
                         validate_diagram_semantics(candidate_diagram, candidate.get('diagram_semantics', 'execution_flow'))
+                        validate_return_fields(candidate_diagram, result['source_facts'])
+                        candidate['analysis']['limitations'] = scope_notes(snapshot)
+                        candidate['learning']['limitations'] = scope_notes(snapshot)
                         errors = validate_evidence(candidate, snapshot) + learning_errors(candidate['learning'], candidate['analysis'], snapshot)
                         if errors:
                             finish('needs_attention', '局部修正未通过来源校验，保留上一轮成果：' + '；'.join(errors[:2]))
@@ -247,6 +258,7 @@ async def run_learning(runner, task_id):
                             'technologies 每项 title 为 stack 中的技术名称且有依赖或代码依据。不要输出Bug，risks必须为空。'
                             'goal_answers必须回答用户目标中明确要求解释的代码问题（1至2项）。第一项必须概括目标的完整起点到终点，作为聊天摘要；不要用用户没问的配置项或参数取代主问题。每项给直接答案和源码依据，不能只说已覆盖或留给练习。阅读路线/练习/图由下游完成。'
                             '每个事实引用精确代码；未读实现不得断言，推断逐条标记。流程区分启动装配与请求执行。不要给操作添加未出现的去重、排序、过滤等行为；路径可能指文件也可能指目录，不能统称目录；只有实际无外部读取时才称纯函数。'
+                            'python_syntax_facts仅记录语法声明与直接return调用：普通dataclass不意味着不可变，frozen未声明时不能写不可变语义。不要添加中文字符兼容、线程安全、性能等未要求且无直接依据的性质断言，标题同样需有据。'
                             '先核对路由挂载条件及全部已读消息入口；用户未指定演示接口时，不得用受限的演示路由替代真实业务入口。最终回复要区分模型结构化分析、确定性文本组合与HTTP响应。'
                             '描述函数时区分它直接返回的数据、调用者随后组装的数据及副作用发生位置；只把return、赋值和状态修改归给实际包含该语句的函数。'
                             'python_returned_value_flows给出返回对象创建、字段回填和return的实际行号：如果对象提前创建后仅回填字段，不能声称创建函数在最后再次调用。'
@@ -260,6 +272,7 @@ async def run_learning(runner, task_id):
                              **({'evidence_catalog': [dict(e, id=i) for i,e in enumerate(citation_catalog,1)]} if citation_catalog else {})}, analysis_schema)
                         analysis = resolve_analysis_citations(analysis.model_dump(), citation_catalog)
                         result['analysis'] = analysis.model_dump()
+                        result['analysis']['limitations'] = scope_notes(snapshot)
                         narrowed = trim_adjacent_evidence(result['analysis'], snapshot)
                         if narrowed:
                             event('Code Agent', 'citation_normalized', '已将少量相邻行越界引用收窄至实际已读范围，仍待语义审核', {'changes': narrowed})
@@ -327,15 +340,16 @@ async def run_learning(runner, task_id):
                         data_instruction = (
                             '生成一张简洁的数据变换图，不是函数调用图。只画4至6个节点，每个节点表示一种具体数据形态（例如文本、记录、键值对、映射），不要用函数名作为节点。'
                             '路径值保留文件或目录的可能性，只有明确分支保证为目录时才写目录。返回对象由多个字段共同构造，不能把一个字段画成唯一数据来源；可将字段集合合为一个节点。每条边用产生目标数据的实际函数/操作作标签，附上该转换的源码证据。数据从生产者流向消费者；不得画函数调用/返回、迭代控制或模块依赖。'
+                            'requested_return_fields是目标函数直接return调用的字段记录；coverage_required为true时每个字段名必须显式出现在节点或边标签中，可合并字段集合但不能漏项。为false时按coverage_note保留分支/范围边界，不合并互斥返回。这只是字段覆盖要求，不代表数据关系已验证。'
                             '只选一个有意义的完整数据路径，标题明确路径的前置条件，例如某配置为真。不要把互斥分支串成链。'
                             '按转换顺序编号n1,n2等，所有节点组成一条有向无环路径，不能有孤立节点。子函数的中间计算可合并为一个转换，不展开往返调用。'
-                            '节点和边label最多40字符。必须有逐项源码证据，未验证推断标记inferred。根据analysis与learning选定的范围生成，不增加未读处理。'
+                            '节点和边label通常不超过40字符，完整字段名较长时可用至100字符或拆分多个标签。必须有逐项源码证据，未验证推断标记inferred。根据analysis与learning选定的范围生成，不增加未读处理。'
                             'previous_diagram和render_feedback是上次真实校验结果，若提供则只修正这些问题。')
                         for render_attempt in range(2):
                             diagram = await llm.ask('Chart Agent',
                                 data_instruction,
-                                {'analysis': result['analysis'], 'learning': result['learning'], 'diagram_semantics': result['diagram_semantics'], 'render_feedback': result.get('render_error'), 'previous_diagram': result.get('diagram') if render_attempt else None,
-                                 **learning_source_context(snapshot, result['analysis'])}, Diagram)
+                                {'analysis': result['analysis'], 'learning': result['learning'], 'requested_return_fields': [f for f in result['source_facts'] if f.get('requested')], 'diagram_semantics': result['diagram_semantics'], 'render_feedback': result.get('render_error'), 'previous_diagram': result.get('diagram') if render_attempt else None,
+                                 **learning_source_context(snapshot, {'analysis': result['analysis'], 'return_fields': [f for f in result['source_facts'] if f.get('requested')]})}, Diagram)
                             result['diagram'] = diagram.model_dump()
                             if result['diagram_semantics'] == 'data_flow':
                                 diagram.title = '数据传递图（非执行时序）：' + diagram.title.removeprefix('数据传递图（非执行时序）：')
@@ -348,6 +362,7 @@ async def run_learning(runner, task_id):
                             save()
                             try:
                                 validate_diagram_semantics(diagram, result['diagram_semantics'])
+                                validate_return_fields(diagram, result['source_facts'])
                                 await runner.renderer(result['mermaid'], workspace)
                                 check()
                                 if not (workspace / 'diagram.svg').is_file() or '<svg' not in (workspace / 'diagram.svg').read_text(encoding='utf-8'):
@@ -359,7 +374,7 @@ async def run_learning(runner, task_id):
                                 result['render_error'] = str(exc)[:300]
                                 if render_attempt:
                                     raise
-                                event('Chart Agent', 'repair', '实际渲染失败，进行一次修正', {'error': result['render_error']})
+                                event('Chart Agent', 'repair', '图表校验或渲染失败，进行一次修正', {'error': result['render_error']})
                         save()
                         event('Chart Agent', 'completed', '数据传递图实际渲染完成', {'artifact': 'diagram.svg'})
                         handoff('Chart Agent', 'Reviewer Agent', 'diagram')

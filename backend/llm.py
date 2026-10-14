@@ -161,13 +161,15 @@ def source_context(snapshot, references=None, *, include_definitions=False):
                             if (isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute)
                                     and call.func.attr in {'insert','append','extend','update','add','commit','rollback','write','write_text','write_bytes','remove','delete','clear'}
                                     and read_statement(call)):
-                                call_owners.append({'function': node.name, 'line': call.lineno, 'call': ast.unparse(call.func)})
+                                call_owners.append({'function': node.name, 'line': call.lineno, 'call': ast.unparse(call.func),
+                                    '_required_lines': list(range(node.lineno, max(node.lineno+1,node.body[0].lineno))) + list(range(call.lineno,call.end_lineno+1))})
                         returns = [n for n in body if isinstance(n, ast.Return) and isinstance(n.value, ast.Name) and read_statement(n)]
                         names = {n.value.id for n in returns}
                         assignments = [n for n in body if isinstance(n, (ast.Assign, ast.AnnAssign)) and read_statement(n)
                                        and any(ast.unparse(t).split('.')[0] in names for t in (n.targets if isinstance(n, ast.Assign) else [n.target]))]
                         if returns and assignments:
                             returned_flows.append({'function': node.name,
+                                '_required_lines': list(range(node.lineno,max(node.lineno+1,node.body[0].lineno))) + [i for n in assignments[:8]+returns[:4] for i in range(n.lineno,n.end_lineno+1)],
                                 'assignments_in_source_order': [{'line': n.lineno, 'code': ast.unparse(n)[:220]} for n in assignments[:8]],
                                 'returns': [{'line': n.lineno, 'code': ast.unparse(n)} for n in returns[:4]],
                                 'note': '静态语法事实：区分返回对象的创建、后续字段回填与最终return，不能把创建函数误说成返回前再次调用。'})
@@ -185,6 +187,7 @@ def source_context(snapshot, references=None, *, include_definitions=False):
                         if visitor.found:
                             decorators = [getattr(d, 'id', getattr(d, 'attr', '')) for d in node.decorator_list]
                             deferred.append({'name': node.name, 'definition_line': node.lineno, 'yield_line': visitor.found[0],
+                                             '_required_lines': [node.lineno,visitor.found[0]] + [i for d in node.decorator_list for i in range(d.lineno,d.end_lineno+1)],
                                              'body_starts_when': 'context_enter' if any(d in ('contextmanager', 'asynccontextmanager') for d in decorators) else 'iteration'})
             except (SyntaxError, ValueError, RecursionError):
                 pass
@@ -196,6 +199,11 @@ def source_context(snapshot, references=None, *, include_definitions=False):
                 lines.append(f'{number}: {text}')
         if not lines:
             continue
+        visible_numbers = {int(line.split(':', 1)[0]) for line in lines}
+        def visible_records(records):
+            return [{k:v for k,v in r.items() if k!='_required_lines'} for r in records
+                    if set(r['_required_lines']) <= visible_numbers]
+        deferred, returned_flows, call_owners = map(visible_records, (deferred, returned_flows, call_owners))
         file = {'path':f['path'],'numbered_code':'\n'.join(lines),'excerpt_only':references is not None or 'analysis_ranges' in f,'total_lines':len(f['content'].splitlines())}
         if 'analysis_ranges' in f:
             file['read_ranges'] = f['analysis_ranges']
@@ -206,6 +214,11 @@ def source_context(snapshot, references=None, *, include_definitions=False):
             file['python_returned_value_flows'] = returned_flows
         if call_owners:
             file['python_direct_call_owners'] = call_owners[:40]
+        if include_definitions:
+            from .learning_facts import source_facts
+            # Restrict facts to code actually supplied in this model call.
+            facts = source_facts({'files': [{**f, 'analysis_ranges': [[n,n] for n in sorted(visible_numbers)]}]})
+            file['python_syntax_facts'] = facts[:40]
         files.append(file)
     return {'commit':snapshot['commit'],'repository':snapshot['repository'],'files':files,
             'reading_limits':snapshot.get('limits',{}),

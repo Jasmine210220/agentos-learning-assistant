@@ -94,6 +94,17 @@ async function api(route) {
       for (const tab of ['解读','学习','数据传递图','来源','审核','协作']) {
         await page.getByRole('button',{name:tab,exact:true}).click();
         if (tab==='数据传递图') await page.getByRole('img',{name:'根据已读取代码生成的数据传递图'}).waitFor();
+        if (tab==='数据传递图' && task.result.source_facts?.some(f=>f.requested)) {
+          const records=page.locator('section').filter({has:page.getByRole('heading',{name:'返回字段的源码记录',exact:true})});
+          await records.waitFor();
+          for(const fact of task.result.source_facts.filter(f=>f.requested))
+            for(const field of fact.fields) assert((await records.innerText()).includes(field.name));
+          await records.locator('.citations button').first().click();
+          await page.locator('.source-modal .highlight').first().waitFor();
+          await page.screenshot({path:path.join(out,'return-field-source.png')});
+          await page.getByRole('button',{name:'关闭代码',exact:true}).click();
+          evidence.checks.push('Static return field records and their source citation displayed; not semantic acceptance');
+        }
         if (tab==='学习') assert.equal(await page.locator('.result-body .claim').count(),task.result.learning.reading_order.length+3);
         await page.screenshot({path:path.join(out,tab+'.png')});
       }
@@ -107,6 +118,7 @@ async function api(route) {
       await page.getByRole('button',{name:'导出报告',exact:true}).click();
       for(let i=0;i<30&&!fs.existsSync(exported);i++) await new Promise(r=>setTimeout(r,100));
       assert(fs.readFileSync(exported,'utf8').includes('三个练习（未执行）'));
+      if(task.result.source_facts?.some(f=>f.requested)) assert(fs.readFileSync(exported,'utf8').includes('返回调用字段的源码记录'));
       evidence.checks.push('Real chat → GitHub → independent learning roles → SVG → source citations → exported report');
       evidence.task_id = task.id;
       const previousUrl=connection.url;

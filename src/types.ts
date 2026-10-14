@@ -7,6 +7,7 @@ export type Attachment = {id:string;files:{path:string;content:string;lines:numb
 export type Api = (route:string,options?:RequestInit)=>Promise<Response>;
 export type Result = {
   mode?: string;
+  source_facts?: {kind:string;name:string;callee?:string;requested?:boolean;coverage_required?:boolean;coverage_note?:string;fields?:{name:string;expression:string}[];evidence:Evidence}[];
   learning?: {background:string;objective:string;flow_indices:number[];reading_order:{title:string;reason:string;module_index:number;concepts:string[];evidence:Evidence[]}[];exercises:{title:string;objective:string;instructions:string[];acceptance:string[];evidence:Evidence[]}[];limitations:string[]};
   improvement?:{summary:string;base_attachment_id:string;current_attachment_id?:string;ready:boolean;limitations:string[];recommendations:{id:string;title:string;kind:'simple'|'complex';reason:string;steps:string[];acceptance:string[];evidence:Evidence[];citations:{url:string;text:string;path:string;line:number}[];diff:string;checks:string[];prompt:string;applied_attachment_id?:string}[]};
   search_error?:string;

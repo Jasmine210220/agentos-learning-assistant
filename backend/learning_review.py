@@ -88,6 +88,7 @@ async def audit_learning(llm, result, snapshot, goal, changed_targets=None):
         '每个问题必须逐字摘录一个目标中的quote，并给出反驳它的源码evidence及逐字source_quote（不带行号前缀）。'
         'source_quote只摘一行关键源码（去掉行首缩进），不能拼接、省略或改写。quote只摘一段原有文字或图的一个标签，不要摘JSON语法。summary不超过80字。'
         '重点检查直接返回类型/副作用所属函数、条件优先级、练习前提与自查一致性、图中数据来源与去向及边条件。核对scope_reason、limitations、objective和background的事实描述；actual_reading_record才是真实读取范围，模型不得声称已读文件未提供。'
+        '标题也是事实断言：python_syntax_facts只记录声明，不证明运行类型；普通@dataclass不等于不可变，字符兼容性等性质需直接依据，不能无依据补写。字段名都出现在图上只代表覆盖，不证明各字段来源和对象构造关系正确；必须继续逐条核对表达式与边。'
         'python_returned_value_flows是静态语法事实：逐项核对创建返回对象的调用发生在前面还是最后，回填已有对象不等于最后再次调用创建函数。'
         'python_direct_call_owners标明语句直接属于哪个函数，不能把调用者的状态修改归给被调用者（也不能反过来）。'
         '核对所有转换动词是否真的出现：resolve 不等于去重，路径值不必然是目录，拼接一个字段不等于提供完整返回对象的全部输入。不要以摘要简化为由放过添加的事实。逐单元核对，不要让形式问题遮蔽事实错误。特别检查“函数签名中有某参数”“一定/只/恒”等断言和生成器调用与实际迭代的区别。'
@@ -259,12 +260,15 @@ async def repair_learning(llm, result, snapshot, goal, on_start=None, event=None
             data['analysis'] = candidate['analysis']
         if role == 'Chart Agent':
             data['learning'] = candidate['learning']
+            data['requested_return_fields'] = [f for f in candidate.get('source_facts', []) if f.get('requested')]
+            data.update(learning_source_context(snapshot, {'findings': selected, 'originals': [catalog[t] for t in targets], 'return_fields': data['requested_return_fields']}))
         output = (await llm.ask(role,
             '只修复已确认的问题单元，不重写整个报告。按output_map返回完整替换单元。'
             '保留仍有效的引用，可增加已读证据，不要移除下游仍需使用的分析引用。学习单元仅输出evidence_ids，必须从evidence_catalog选择编号，禁止重新编写文件或行号。'
             '练习只输出symbol与evidence_ids，symbol必须逐字出现在所选源码中；程序会生成固定类型的开放式查证问题，不要输出instructions或acceptance。'
             '图允许用标题/边标签清楚限定一个分支，或用条件边表达分流与汇合；不要串联互斥分支。'
             'data_flow图用4至6个数据形态节点（不是函数名）表示一条数据变换路径，边写实际转换操作，必须无环且无孤立节点；不画控制调用/返回，标题保留非执行时序及分支条件。'
+            '若包含requested_return_fields且coverage_required为true，每个字段名须显式出现在字段集合节点或边标签中；为false时保留coverage_note说明的分支/范围边界，不强制合并。字段覆盖不代表数据关系正确。'
             '不增加功能、不扩展目标、不声称运行过。', data, schema)).model_dump()
         for i, target in enumerate(targets):
             value = output[f'item{i}']
