@@ -58,11 +58,14 @@ async def main():
             current['analysis']['modules'][0]['explanation']=mutation
         if name.startswith('condition_'):
             current['analysis']['modules'][0]['evidence']=[dict(path='src/fastapi_cli/cli.py',start_line=159,end_line=192),dict(path='src/fastapi_cli/config.py',start_line=37,end_line=45)]
+        goal = ('理解 _run 中未提供 path/app/entrypoint 时的应用发现分支条件，以及 get_import_data 中的返回类型交接。'
+                if name.startswith('condition_') else '理解 get_module_data_from_path 与 get_import_data 的返回类型和交接。')
+        current['learning']['objective'] = goal
         model=DeepSeek(lambda _:None,lambda:None)
         model.learning_mode=model.reserve_request_budget=True
-        review=await audit_learning(model,current,snapshot,'理解 _run 的应用发现分支选择，以及 get_import_data 的成功路径中 ModuleData 与 ImportData 的交接。')
+        review=await audit_learning(model,current,snapshot,goal)
         passed=(review['passed'] if expected else not review['passed'] and 'analysis.modules.0' in review['repair_targets'])
-        evidence=dict(kind='real_model_reviewer_regression_with_labelled_mutation',case=name,mutation=mutation,target_commit=snapshot['commit'],model=model.config['model'],provenance=metadata,input=current,review=review,usage=model.usage,expected_passed=expected,passed=passed)
+        evidence=dict(kind='real_model_reviewer_regression_with_labelled_mutation',case=name,mutation=mutation,target_commit=snapshot['commit'],model=model.config['model'],provenance=metadata,goal=goal,input=current,review=review,usage=model.usage,expected_passed=expected,passed=passed)
         (out/f'{name}.json').write_text(json.dumps(evidence,ensure_ascii=False,indent=2),encoding='utf-8')
         outcomes.append(dict(case=name,passed=passed,usage=model.usage))
         print(json.dumps(outcomes[-1],ensure_ascii=False),flush=True)

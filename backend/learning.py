@@ -280,6 +280,7 @@ async def run_learning(runner, task_id):
                             raise ValueError('解读成果校验未通过：' + '；'.join(errors[:3]))
                         event('Code Agent', 'completed', '项目解读已保存，尚待最终审核', {'artifact': 'analysis'})
                         if not analysis.scope_complete:
+                            phase('reviewing', 'Reviewer Agent', '复核读取范围是否满足用户指定起终点')
                             event('Reviewer Agent', 'scope', '复核读取范围是否满足用户指定起终点')
                             scope = await llm.ask('Reviewer Agent',
                                 '只复核源码范围，不扩写目标。先精确读goal中的起点、终点和排除项。'
@@ -293,6 +294,7 @@ async def run_learning(runner, task_id):
                             result['analysis']['scope_complete'] = scope.scope_complete
                             result['analysis']['scope_reason'] = scope.reason
                             save()
+                            event('Reviewer Agent', 'completed' if scope.scope_complete else 'rejected', '范围复核已完成', {'scope_complete': scope.scope_complete})
                             if not scope.scope_complete:
                                 finish('needs_attention', '已读范围不足以解释指定流程：' + scope.reason)
                                 return

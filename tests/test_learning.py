@@ -85,6 +85,9 @@ def test_scope_gap_stops_before_learning(tmp_path):
     assert task['status'] == 'needs_attention'
     assert 'learning' not in task['result']
     assert not any(e['role'] == 'Learning Agent' for e in store.events(task['id']))
+    review_events = [e for e in store.events(task['id']) if e['role'] == 'Reviewer Agent']
+    assert review_events[0]['kind'] == 'started'
+    assert any(e['kind'] == 'rejected' for e in review_events)
 
 
 def test_learning_rejects_unread_or_unconsumed_evidence():
