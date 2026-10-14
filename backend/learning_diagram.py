@@ -1,5 +1,21 @@
 """Explicit diagram semantics for lazy pipelines; no execution of source code."""
 from .llm import learning_source_context
+import re
+
+DIAGRAM_BOUNDARY = '当前只生成数据传递图，不提供调用顺序图或执行时序图；箭头表示有代码依据的数据来源与去向，渲染成功不代表语义正确。'
+
+
+def requests_execution_diagram(goal):
+    return bool(re.search(r'时序|调用顺序|执行顺序|sequence\s*diagram|call\s*order|execution\s*order', goal, re.I))
+
+
+def reading_record(snapshot):
+    files = []
+    for f in snapshot.get('files', []):
+        ranges = f.get('analysis_ranges', []) if snapshot.get('excerpted') else [[1, f.get('lines') or len(f.get('content', '').splitlines())]]
+        if ranges:
+            files.append(f['path'] + '：' + '、'.join(f'{a}-{b}' for a,b in ranges))
+    return '程序记录的实际已读范围（不等于目标已完整覆盖）：' + '；'.join(files)
 
 
 def diagram_semantics(snapshot, analysis):

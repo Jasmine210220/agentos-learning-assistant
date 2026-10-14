@@ -10,7 +10,8 @@ fs.mkdirSync(data, {recursive:true});
 const live = process.env.LEARNING_LIVE === '1';
 const repository = process.env.LEARNING_REPOSITORY || 'https://github.com/fastapi/fastapi-cli';
 const ref = process.env.LEARNING_REF || '093be9ca19f2ef44ba523aae0a98d6c9ea2e0888';
-const goal = process.env.LEARNING_GOAL || '理解 src/fastapi_cli/cli.py 中 dev 函数经 _run、get_import_data 发现应用，到调用 uvicorn.run 为止。不解释安装入口或 uvicorn 内部。给阅读路线、三个练习和一张流程图。';
+const fixture = require('../tests/fixtures/fastapi-cli.json');
+const goal = process.env.LEARNING_GOAL || fixture.goal;
 // Live credentials must arrive in memory from the launcher. Never copy settings
 // files into evidence or project directories.
 const exe = process.env.AGENTOS_TEST_EXE || path.join(root, 'test-output/验收 学习061/AgentOS Lite/AgentOS Lite.exe');
@@ -20,7 +21,7 @@ delete env.AGENTOS_DEV_URL;
 delete env.AGENTOS_PYTHON;
 for (const key of Object.keys(env)) if (key.toLowerCase() === 'path') delete env[key];
 env.PATH = process.env.SystemRoot + '\\System32;' + process.env.SystemRoot;
-const evidence = {version, deployment:process.env.LEARNING_DEPLOYMENT || 'installed', real_model:live, executable:exe, python_node_path_removed:true, checks:[]};
+const evidence = {kind:'installed_or_packaged_ui_integration_not_content_acceptance',content_acceptance:'pending', version, deployment:process.env.LEARNING_DEPLOYMENT || 'installed', real_model:live, executable:exe, python_node_path_removed:true, checks:[]};
 const errors = [];
 let app, connection;
 async function launch() {
@@ -45,17 +46,35 @@ async function api(route) {
     assert.equal(await page.getByRole('button',{name:'添加目录',exact:true}).count(),0);
     if (live) {
       assert((await api('/health')).configured, 'Model credential unavailable');
-      await page.getByRole('textbox',{name:'已有基础',exact:true}).fill(process.env.LEARNING_BACKGROUND || '会 Python 基础，不熟悉 FastAPI');
+      await page.getByRole('button',{name:'设置',exact:false}).click();
+      await page.getByRole('textbox',{name:'模型',exact:true}).fill(process.env.LEARNING_MODEL || 'deepseek-flash');
+      await page.getByRole('textbox',{name:'DeepSeek 密钥',exact:true}).fill(process.env.DEEPSEEK_API_KEY);
+      await page.getByRole('button',{name:'保存',exact:true}).click();
+      await page.getByText('已保存',{exact:true}).waitFor();
+      assert.equal(await page.getByRole('textbox',{name:'DeepSeek 密钥',exact:true}).inputValue(),'');
+      await page.screenshot({path:path.join(out,'settings-saved.png')});
+      await page.getByRole('button',{name:'关闭设置',exact:true}).click();
+      evidence.checks.push('Model configured through UI; key cleared from input and stored by Windows DPAPI');
+      delete env.DEEPSEEK_API_KEY;
+
+      await page.getByRole('textbox',{name:'已有基础',exact:true}).fill(process.env.LEARNING_BACKGROUND || fixture.background);
       await page.getByRole('textbox',{name:'仓库版本',exact:true}).fill(ref);
       await page.getByRole('textbox',{name:'消息',exact:true}).fill(repository + ' ' + goal);
       await page.getByRole('button',{name:'发送',exact:true}).click();
-      let task, lastStatus;
+      let task, lastStatus, progressCaptured=false;
       const started = Date.now();
       while (Date.now()-started < 660000) {
         const tasks = await api('/tasks');
         if (tasks.length) {
           task = await api('/tasks/'+tasks[0].id);
           if(task.status!==lastStatus) { console.log(JSON.stringify({task:task.id,status:task.status,usage:task.usage})); lastStatus=task.status; }
+          if (!progressCaptured && ['analyzing','teaching','drawing','reviewing'].includes(task.status)) {
+            await page.getByRole('region',{name:'任务协作进度'}).waitFor();
+            await page.screenshot({path:path.join(out,'running-progress.png')});
+            await page.getByRole('button',{name:'展开协作详情',exact:true}).click();
+            await page.getByRole('button',{name:'协作',exact:true}).waitFor();
+            progressCaptured=true;
+          }
           if (['succeeded','failed','needs_attention','cancelled','interrupted'].includes(task.status)) break;
         }
         await new Promise(r=>setTimeout(r,1500));
@@ -64,15 +83,16 @@ async function api(route) {
       const events = await api('/tasks/'+task.id+'/events');
       fs.writeFileSync(path.join(out,'task.json'),JSON.stringify({task,events},null,2));
       await page.screenshot({path:path.join(out,'task-finished.png')});
-      assert.equal(task.status,'succeeded',task.error);
+      evidence.task_status=task.status; evidence.model=process.env.LEARNING_MODEL||'deepseek-flash';
+      evidence.input={repository,ref,goal,background:process.env.LEARNING_BACKGROUND||fixture.background};
       assert.equal(task.payload.kind,'learn');
       assert.equal(task.result.learning.exercises.length,3);
       assert.equal(task.result.snapshot.commit,ref);
       assert.equal(task.repository,repository);
       await page.getByRole('button',{name:'查看成果',exact:true}).first().click();
-      for (const tab of ['解读','学习','流程图','来源','审核','协作']) {
+      for (const tab of ['解读','学习','数据传递图','来源','审核','协作']) {
         await page.getByRole('button',{name:tab,exact:true}).click();
-        if (tab==='流程图') await page.getByRole('img',{name:'根据已读取代码生成的流程图'}).waitFor();
+        if (tab==='数据传递图') await page.getByRole('img',{name:'根据已读取代码生成的数据传递图'}).waitFor();
         if (tab==='学习') assert.equal(await page.locator('.result-body .claim').count(),task.result.learning.reading_order.length+3);
         await page.screenshot({path:path.join(out,tab+'.png')});
       }
@@ -96,19 +116,26 @@ async function api(route) {
       page=await launch();
       const restored=await api('/tasks/'+task.id);
       assert.deepEqual(restored.result,task.result);
-      assert.equal(restored.status,'succeeded');
+      assert.equal(restored.status,task.status);
+      assert((await api('/health')).configured,'DPAPI model setting not restored');
       const chats=await api('/chats');
       await page.locator(`[data-chat-id="${chats[0].id}"]`).click();
       await page.getByRole('button',{name:'查看成果',exact:true}).first().click();
       await page.getByRole('button',{name:'学习',exact:true}).click();
+      await page.getByText('历史任务',{exact:true}).waitFor();
+      assert.equal(await page.locator('.task-progress .spin').count(),0);
       await page.screenshot({path:path.join(out,'restart.png')});
       evidence.checks.push('Backend exited; complete learning artifacts survived application restart without regeneration');
     }
     assert.deepEqual(errors,[]);
-    evidence.passed=true;
+    evidence.integration_passed=true;
+    evidence.passed=!live||evidence.task_status==='succeeded';
+    if(!evidence.passed)process.exitCode=1;
   } catch(e) {evidence.passed=false;evidence.error=e.message;process.exitCode=1;}
   finally {
     if(app) await app.close();
+    const credentialFile=path.join(data,'model-settings.json');
+    if(fs.existsSync(credentialFile))fs.unlinkSync(credentialFile); // Only this isolated test's credential copy.
     fs.writeFileSync(path.join(out,'evidence.json'),JSON.stringify(evidence,null,2));
     console.log(JSON.stringify(evidence));
   }

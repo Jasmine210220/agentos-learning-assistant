@@ -37,7 +37,7 @@ def test_fabricated_review_cannot_reject_or_silently_pass(field, value):
     assert not review['repair_targets']
 
 
-@pytest.mark.parametrize('verdict,expected', [('dismissed', True), ('confirmed', False)])
+@pytest.mark.parametrize('verdict,expected', [('uncertain', False), ('confirmed', False)])
 def test_criticism_is_adjudicated_with_exact_source(verdict, expected):
     class Judge:
         async def ask(self, role, instruction, data, schema):
@@ -72,6 +72,7 @@ def test_selective_repair_does_not_regenerate_unaffected_artifacts(tmp_path):
     assert task['result']['diagram'] == json.loads((store.workspace(task['id'])/'learning-attempt-1.json').read_text(encoding='utf-8'))['diagram']
     assert task['result']['learning']['exercises'][1:] == LEARNING['exercises'][1:]
     assert task['result']['checks']['round'] == 2
+    assert task['result']['review']['outcome'] == 'corrected_and_rechecked'
     calls = [e for e in store.events(task['id']) if e['kind'] == 'model_input']
     assert sum(e['details']['schema'] == 'LearningAnalysis' for e in calls) == 1
     assert sum(e['details']['schema'] == 'Diagram' for e in calls) == 1

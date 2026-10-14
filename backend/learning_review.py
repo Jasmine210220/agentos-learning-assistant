@@ -5,6 +5,7 @@ from pydantic import Field, create_model
 from .models import Strict, Evidence, Claim, Exercise, ReadingStep, Diagram
 from .llm import learning_source_context
 from .workflow import validate_evidence
+from .learning_diagram import reading_record
 from .learning_exercises import ExerciseFocus, exercise_from_focus
 
 
@@ -35,6 +36,12 @@ class FindingDecisions(Strict):
 
 def units(result):
     output = {'analysis.summary': result['analysis']['summary']}
+    for section, fields in [('analysis', ('scope_reason',)), ('learning', ('background', 'objective'))]:
+        for field in fields:
+            if field in result[section]:
+                output[f'{section}.{field}'] = result[section][field]
+        for i, value in enumerate(result[section].get('limitations', [])):
+            output[f'{section}.limitations.{i}'] = value
     for section in ('modules', 'flow', 'technologies', 'goal_answers'):
         output.update({f'analysis.{section}.{i}': item for i, item in enumerate(result['analysis'].get(section, []))})
     for section in ('reading_order', 'exercises'):
@@ -80,7 +87,7 @@ async def audit_learning(llm, result, snapshot, goal, changed_targets=None):
         '核对学习成果的实质代码事实。units的键是精确target。只有实际存在的错误才输出findings；无错误返回空数组。'
         '每个问题必须逐字摘录一个目标中的quote，并给出反驳它的源码evidence及逐字source_quote（不带行号前缀）。'
         'source_quote只摘一行关键源码（去掉行首缩进），不能拼接、省略或改写。quote只摘一段原有文字或图的一个标签，不要摘JSON语法。summary不超过80字。'
-        '重点检查直接返回类型/副作用所属函数、条件优先级、练习前提与自查一致性、图中调用顺序和边条件。'
+        '重点检查直接返回类型/副作用所属函数、条件优先级、练习前提与自查一致性、图中数据来源与去向及边条件。核对scope_reason、limitations、objective和background的事实描述；actual_reading_record才是真实读取范围，模型不得声称已读文件未提供。'
         'python_returned_value_flows是静态语法事实：逐项核对创建返回对象的调用发生在前面还是最后，回填已有对象不等于最后再次调用创建函数。'
         'python_direct_call_owners标明语句直接属于哪个函数，不能把调用者的状态修改归给被调用者（也不能反过来）。'
         '逐单元核对，不要让形式问题遮蔽事实错误。特别检查“函数签名中有某参数”“一定/只/恒”等断言和生成器调用与实际迭代的区别。'
@@ -107,7 +114,7 @@ async def audit_learning(llm, result, snapshot, goal, changed_targets=None):
                                      target=(Literal[tuple(group)], ...))
         audit_schema = create_model('LearningAudit', __base__=LearningAudit,
                                     findings=(list[bound_finding], Field(max_length=4)))
-        data = {'goal': goal, 'units': group, 'fact_check': any(k.startswith('analysis.') for k in group), 'diagram_semantics': result.get('diagram_semantics', 'execution_flow'), 'repair_check': changed_targets is not None,
+        data = {'goal': goal, 'actual_reading_record': reading_record(snapshot), 'units': group, 'fact_check': any(k.startswith('analysis.') for k in group), 'diagram_semantics': result.get('diagram_semantics', 'execution_flow'), 'repair_check': changed_targets is not None,
                 **learning_source_context(snapshot, None if snapshot.get('excerpted') and any(k.startswith('analysis.') for k in group) else group)}
         for attempt in range(2):
             part = (await llm.ask('Reviewer Agent', instruction, data, audit_schema)).model_dump()
@@ -115,7 +122,7 @@ async def audit_learning(llm, result, snapshot, goal, changed_targets=None):
             if not errors:
                 break
             if attempt:
-                return {'passed': False, 'summary': '审核意见无法绑定原文或代码，停止交付而非自动通过',
+                return {'passed': False, 'outcome': 'invalid_audit', 'summary': '审核意见无法绑定原文或代码，停止交付而非自动通过',
                         'issues': errors, 'repair_targets': [], 'findings': [], 'audit': part,
                         'validation_failed': True, 'decisions': []}
             data['invalid_audit'] = part
@@ -125,7 +132,7 @@ async def audit_learning(llm, result, snapshot, goal, changed_targets=None):
     findings = [f for part in audits for f in part['findings']]
     audit = {'summary': '；'.join(part['summary'] for part in audits), 'findings': findings, 'groups': audits}
     if not findings:
-        return {'passed': True, 'summary': audit['summary'], 'issues': [], 'repair_targets': [],
+        return {'passed': True, 'outcome': 'no_issues_found', 'summary': '自动审核未发现问题（不是人工验收）：' + audit['summary'], 'issues': [], 'repair_targets': [],
                 'findings': [], 'audit': audit, 'decisions': []}
     # A fresh reading sees only original units and source, never the proposed
     # criticisms, so it cannot simply echo an earlier reviewer's explanation.
@@ -151,15 +158,19 @@ async def audit_learning(llm, result, snapshot, goal, changed_targets=None):
         independent_schema)).model_dump()
     errors = finding_errors(independent['findings'], suspected, snapshot)
     if errors:
-        return {'passed': False, 'summary': '独立复核无法绑定原文或源码', 'issues': errors,
+        return {'passed': False, 'outcome': 'invalid_audit', 'summary': '独立复核无法绑定原文或源码', 'issues': errors,
                 'repair_targets': [], 'findings': [], 'audit': audit, 'independent_audit': independent,
                 'validation_failed': True, 'decisions': []}
     retained = independent['findings']
     decisions = [dict(target=f['target'], quote=f['quote'], verdict=(
         'confirmed' if any(g['target'] == f['target'] and (g['quote'] in f['quote'] or f['quote'] in g['quote']) for g in retained)
-        else 'replaced' if any(g['target'] == f['target'] for g in retained) else 'dismissed')) for f in findings]
-    return {'passed': not retained, 'summary': '已独立复核原文及源码；' + ('仍有问题需修正' if retained else '未重现需退回的实质问题'),
-            'issues': [f"{f['target']}：{f['problem']}" for f in retained],
+        else 'uncertain'), reason=('两次均定位到同一原文问题' if any(g['target'] == f['target'] and (g['quote'] in f['quote'] or f['quote'] in g['quote']) for g in retained)
+                                 else '原疑点未重现，但没有针对原疑点的有据反证，不能关闭'), evidence=f['evidence']) for f in findings]
+    disputed = [f for f,d in zip(findings,decisions) if d['verdict']=='uncertain']
+    return {'passed': False, 'outcome': 'disputed' if disputed else 'confirmed_errors',
+            'unresolved_findings': disputed,
+            'summary': '原疑点未重现，缺少关闭依据，保留争议并需关注' if disputed else '独立复核确认错误，需有限修正',
+            'issues': [f"{f['target']}：{f['problem']}" for f in retained + disputed],
             'repair_targets': list(dict.fromkeys(f['target'] for f in retained)), 'findings': retained,
             'audit': audit, 'independent_audit': independent, 'decisions': decisions}
 
@@ -167,7 +178,7 @@ async def audit_learning(llm, result, snapshot, goal, changed_targets=None):
 def target_schema(target):
     if target == 'diagram':
         return Diagram
-    if target == 'analysis.summary':
+    if target in ('analysis.summary', 'analysis.scope_reason', 'learning.background', 'learning.objective') or '.limitations.' in target:
         return str
     if target.startswith('analysis.'):
         return Claim
@@ -208,7 +219,7 @@ async def repair_learning(llm, result, snapshot, goal, on_start=None, event=None
         catalog = units(candidate)
         def correction_schema(target):
             original = ExerciseFocus if target.startswith('learning.exercises.') else target_schema(target)
-            if not target.startswith('learning.'):
+            if not target.startswith('learning.') or original is str:
                 return original
             fields = {name: (field.annotation, deepcopy(field)) for name, field in original.model_fields.items() if name not in ('evidence', 'evidence_ids')}
             from typing import Annotated
@@ -240,9 +251,9 @@ async def repair_learning(llm, result, snapshot, goal, on_start=None, event=None
                 value['title'] = '数据传递图（非执行时序）：' + value['title'].removeprefix('数据传递图（非执行时序）：')
             if target.startswith('learning.exercises.'):
                 value = exercise_from_focus(value, int(target.split('.')[-1]), evidence_catalog, snapshot)
-            elif target.startswith('learning.'):
+            elif target.startswith('learning.') and isinstance(value, dict):
                 value['evidence'] = [evidence_catalog[j-1] for j in dict.fromkeys(value.pop('evidence_ids'))]
-            elif target.startswith('analysis.') and target != 'analysis.summary':
+            elif target.startswith('analysis.') and isinstance(value, dict):
                 # These citations also form the downstream evidence catalog.
                 # Correct text without invalidating already-consumed source IDs.
                 value['evidence'] = deepcopy(catalog[target]['evidence']) + [

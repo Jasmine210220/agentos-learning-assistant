@@ -1,7 +1,7 @@
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
 Set-Location -LiteralPath $projectRoot
-$python = Join-Path $projectRoot '.venv\Scripts\python.exe'
+$python = if ($env:AGENTOS_BUILD_PYTHON) { $env:AGENTOS_BUILD_PYTHON } else { Join-Path $projectRoot '.venv\Scripts\python.exe' }
 if (-not (Test-Path -LiteralPath $python)) { throw 'Missing project Python environment.' }
 $package = Get-Content -LiteralPath (Join-Path $projectRoot 'package.json') -Raw -Encoding utf8 | ConvertFrom-Json
 function Get-SourceDigest([string]$filePath) {
@@ -10,6 +10,10 @@ function Get-SourceDigest([string]$filePath) {
     try { return ([System.BitConverter]::ToString($algorithm.ComputeHash($stream))).Replace('-','') }
     finally { $stream.Dispose(); $algorithm.Dispose() }
 }
+$sourceCommit = (& git -c ('safe.directory=' + $projectRoot.Replace('\','/')) rev-parse HEAD).Trim()
+if ($LASTEXITCODE -ne 0) { throw 'A source commit is required for release provenance.' }
+$dirty = & git -c ('safe.directory=' + $projectRoot.Replace('\','/')) status --porcelain --untracked-files=no
+if ($dirty) { throw 'Commit tracked source changes locally before packaging. No push is required.' }
 $records = @{}
 foreach ($folder in @('backend','src','electron')) {
     Get-ChildItem -LiteralPath (Join-Path $projectRoot $folder) -Recurse -File |
@@ -30,6 +34,6 @@ foreach ($relativePath in $records.Keys) {
     if ((Get-SourceDigest (Join-Path $projectRoot $relativePath)) -ne $records[$relativePath]) { throw 'Source changed while packaging; rebuild before delivery.' }
 }
 $output = Join-Path $projectRoot $package.build.directories.output
-@{version=$package.version;date=(Get-Date -Format o);source=$records;installer=(Get-SourceDigest (Join-Path $output ('AgentOS Lite Setup '+$package.version+'.exe')))} |
+@{source_commit=$sourceCommit;version=$package.version;date=(Get-Date -Format o);source=$records;installer=(Get-SourceDigest (Join-Path $output ('AgentOS Lite Setup '+$package.version+'.exe')))} |
     ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $output 'source-manifest.json') -Encoding utf8
 Write-Output 'Built current backend, frontend and Windows installer. Installation acceptance is still required.'

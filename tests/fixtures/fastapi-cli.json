@@ -1,0 +1,19 @@
+{
+  "repository": "https://github.com/fastapi/fastapi-cli",
+  "commit": "093be9ca19f2ef44ba523aae0a98d6c9ea2e0888",
+  "files": {
+    "src/fastapi_cli/discover.py": "ca54d8663e5cbb87af98177e4150750ce5d61c13920164aaea5aca31c09f6bbf",
+    "src/fastapi_cli/cli.py": "672c12821fc66d7cc0ef0af47570278c63c3725c3e8ae7b0277a2c00176724b4",
+    "src/fastapi_cli/config.py": "a3ec8f92d2dd75e306497db95633a0dd6f08fa389d0c5f5241c7293e9c2942de"
+  },
+  "goal": "理解 src/fastapi_cli/discover.py 中 get_module_data_from_path 如何将一个 Path 转成 ModuleData：关注 __init__.py 特殊处理、父包条件和三个返回字段。只解释该函数，不展开调用者、应用导入或服务器启动。给阅读路线、三个练习和数据传递图。",
+  "background": "会 Python 基础，不熟悉 pathlib 和 Python 包路径",
+  "expected_facts": [
+    {"id":"resolve", "lines":[45,47], "fact":"先 path.resolve()，初始 module_path 为解析后的路径。"},
+    {"id":"init_file", "lines":[48,51], "fact":"只有路径为文件且 stem 为 __init__ 时，module_path 改为父目录。初始 module_paths 含该路径，extra_sys_path 为其父目录。"},
+    {"id":"parents", "lines":[52,58], "fact":"遍历祖先目录；存在 __init__.py 文件时在 module_paths 头部插入并更新 extra_sys_path，否则 break。不能说它会跨越无 __init__.py 的目录。"},
+    {"id":"module_string", "lines":[60,60], "fact":"按 module_paths 中各路径的 stem 用点连接，得到 module_import_str。"},
+    {"id":"return", "lines":[61,65], "fact":"直接返回 ModuleData，含 module_import_str、resolve 后的 extra_sys_path、module_paths；不是 ImportData，不在此函数执行 sys.path.insert。"},
+    {"id":"static", "lines":[45,65], "fact":"文件系统条件只做静态解释；本验收不运行目标项目，不预设某个真实路径的结果。"}
+  ]
+}

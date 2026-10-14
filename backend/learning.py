@@ -11,7 +11,7 @@ from .llm import learning_source_context, ModelBudgetExceeded
 from .models import LearningAnalysis, LearningPlan, Diagram, Strict, ScopeAssessment
 from .learning_review import audit_learning, repair_learning
 from .learning_exercises import ExerciseFocus, exercise_from_focus
-from .learning_diagram import diagram_semantics, validate_diagram_semantics
+from .learning_diagram import validate_diagram_semantics, requests_execution_diagram, DIAGRAM_BOUNDARY, reading_record
 from .learning_reading import select_learning_excerpt, include_route_siblings, trim_adjacent_evidence, analysis_citation_contract, resolve_analysis_citations
 from .workflow import Stopped, select_repository_files, validate_evidence, diagram_source
 
@@ -72,7 +72,7 @@ async def make_learning(llm, analysis, background, goal, feedback, snapshot):
         exercises=(list[exercise], Field(min_length=3, max_length=3)), limitations=(list[str], ...))
     draft = await llm.ask('Learning Agent',
         '根据上游analysis和学习基础制定3步阅读顺序及恰好三个由浅入深的练习。每步reason不超过80字，concepts仅写2个知识主题，不重复解释源码。'
-        'module_index为analysis.modules的一基编号；flow_indices为绘图使用的analysis.flow一基编号，按执行顺序且不重复。'
+        'module_index为analysis.modules的一基编号；flow_indices为绘图使用的analysis.flow一基编号，按数据变换路径且不重复。'
         '每步只选最关键的1至2个evidence_ids，最多6个；只能从evidence_catalog选择整数编号，不能自己写文件或行号。concepts写具体知识重点。'
         '三个练习只输出focus_id，从focus_choices选择；每个编号已绑定真实符号和上游来源，不自己组合符号与证据。不输出答案、指令或自查条件。优先选函数或变量名。'
         '三个焦点分别服务于：1追踪参数与数据来源；2核对条件与去向；3区分返回数据与副作用。程序根据这三类任务生成开放式提问。'
@@ -106,13 +106,13 @@ def report_learning(task, result):
     for i, exercise in enumerate(learning.get('exercises', []), 1):
         lines += [f"### {i}. {exercise['title']}", exercise['objective'], *['- ' + s for s in exercise['instructions']],
                   '自查条件：', *['- ' + s for s in exercise['acceptance']], *evidence(exercise['evidence'])]
-    lines += ['', '## 范围与限制', analysis.get('scope_reason', ''), *analysis.get('limitations', []), *learning.get('limitations', []),
+    lines += ['', '## 范围与限制', reading_record(snapshot), '模型范围判断（待人工核对）：' + analysis.get('scope_reason', ''), *analysis.get('limitations', []), *learning.get('limitations', []),
               ('本次模型按所选代码段阅读，完整文件仅作为可查看的来源快照。已读范围：' + '；'.join(
                   f["path"] + ' ' + '、'.join(f'{a}-{b}' for a,b in f.get('analysis_ranges', []))
                   for f in snapshot.get('files', []) if f.get('analysis_ranges'))) if snapshot.get('excerpted') else '',
               f"读取 {len(snapshot.get('files', []))} 个文件；仅解释已读取范围。", '', '## 审核',
-              '通过' if task['status'] == 'succeeded' else '未完成或未通过', result.get('review', {}).get('summary', ''),
-              *result.get('review', {}).get('issues', []), task.get('error') or '', '', '## 流程图',
+              '自动审核未发现剩余问题（不代表人工验收）' if task['status'] == 'succeeded' else '未完成或未通过', result.get('review', {}).get('summary', ''),
+              *result.get('review', {}).get('issues', []), task.get('error') or '', '', '## 数据传递图',
               '箭头表示选定路径中的数据传递，不表示完整调用时序。' if result.get('diagram_semantics') == 'data_flow' else '箭头表示主要调用与控制流程。',
               '```mermaid', result.get('mermaid', ''), '```']
     return '\n'.join(lines)
@@ -146,7 +146,7 @@ async def run_learning(runner, task_id):
         temporary.write_text(report_learning(final, result), encoding='utf-8')
         temporary.replace(workspace / 'report.md')
         store.update(task_id, status=status, error=message or None)
-        event('System', status, message or '解读、学习路线、三个练习和流程图已验证并保存')
+        event('System', status, message or '成果已保存，自动审核未发现剩余问题；未人工验收或执行代码')
     llm = runner.llm_factory(lambda usage: store.update(task_id, usage=usage), check)
     llm.reserve_request_budget = True
     llm.learning_mode = True
@@ -160,8 +160,13 @@ async def run_learning(runner, task_id):
             check()
             async with asyncio.timeout(runner.timeout_seconds):
                 phase('planning', 'Supervisor', '固定学习交付范围')
+                result['diagram_semantics'] = 'data_flow'
+                result['diagram_boundary'] = DIAGRAM_BOUNDARY
+                if requests_execution_diagram(task['goal']):
+                    finish('needs_attention', DIAGRAM_BOUNDARY + ' 本次请求未执行；请将目标明确改为理解数据传递后重新提交。')
+                    return
                 result['plan'] = {'objective': task['goal'], 'background': task['payload'].get('learner_background', ''),
-                                  'acceptance': ['有依据的项目解读', '阅读路线与三个练习', '一张已渲染的主流程图'],
+                                  'acceptance': ['有依据的项目解读', '阅读路线与三个练习', '一张已渲染的主数据传递图'],
                                   'execution': '固定串行流程；不搜索项目、不执行代码、不自动修改代码'}
                 save()
                 event('Supervisor', 'completed', '使用固定流程，不增加自主规划调用', result['plan'])
@@ -216,7 +221,7 @@ async def run_learning(runner, task_id):
                             finish('needs_attention', '局部修正未通过来源校验，保留上一轮成果：' + '；'.join(errors[:2]))
                             return
                         if candidate['diagram'] != result['diagram']:
-                            phase('drawing', 'Chart Agent', '实际渲染修正后的流程图')
+                            phase('drawing', 'Chart Agent', '实际渲染修正后的数据传递图')
                             staging = workspace / f'render-revision-{attempt}'
                             staging.mkdir(exist_ok=True)
                             candidate['mermaid'] = diagram_source(candidate_diagram)
@@ -326,15 +331,7 @@ async def run_learning(runner, task_id):
                             'previous_diagram和render_feedback是上次真实校验结果，若提供则只修正这些问题。')
                         for render_attempt in range(2):
                             diagram = await llm.ask('Chart Agent',
-                                data_instruction if result['diagram_semantics'] == 'data_flow' else
-                                '使用learning.flow_indices选定的analysis.flow步骤生成一张4至6节点的主请求流程图。最多8条边，把子函数调用合并成处理步骤，不展开往返调用。'
-                                '图是简洁导航，不复述报告：每个节点label只写函数名或短动作，最多40字符；每个边label最多30字符。详细解释已在analysis中，不塞进图标签。'
-                                '如果只画主分支，必须在标题中写明具体分支/前置条件；否则必须用条件边分流并汇合。互斥分支不能串联为必经步骤。'
-                                '边标签写调用或返回的真实所属函数，不把被调用函数的返回值混同于调用者随后组装的对象。'
-                                '存在python_deferred_bodies时，先画建立迭代器、再画消费者开始迭代，后画被驱动的读取/解析。消费者与yield的关系可用循环边，不能把函数体执行放在消费者调用之前。'
-                                '但当diagram_semantics为data_flow时，以上时序要求改为：只画4至6节点的无环数据传递图。按数据变换方向编号n1,n2等，边只向更大的编号。把处理函数及其内部调用合并为一个节点，不画调用/返回环。节点表示数据处理步骤，边标签表示传递的实际数据。它不声称执行时序，生成器按需被消费者驱动。'
-                                'execution_flow模式节点写动作、边表示执行顺序；data_flow模式边只表示数据传递。不能混用模块依赖、数据流和调用时序。每个节点和边引用源码，推断关系标记inferred。'
-                                '仅解释读到的实现，不补充未读步骤。render_feedback为实际渲染错误，只修复该问题。',
+                                data_instruction,
                                 {'analysis': result['analysis'], 'learning': result['learning'], 'diagram_semantics': result['diagram_semantics'], 'render_feedback': result.get('render_error'), 'previous_diagram': result.get('diagram') if render_attempt else None,
                                  **learning_source_context(snapshot, result['analysis'])}, Diagram)
                             result['diagram'] = diagram.model_dump()
@@ -343,7 +340,7 @@ async def run_learning(runner, task_id):
                                 result['diagram'] = diagram.model_dump()
                             errors = validate_evidence(result['diagram'], snapshot)
                             if errors:
-                                raise ValueError('流程图证据未通过：' + '；'.join(errors[:3]))
+                                raise ValueError('数据传递图证据未通过：' + '；'.join(errors[:3]))
                             result['mermaid'] = diagram_source(diagram)
                             (workspace / 'diagram.mmd').write_text(result['mermaid'], encoding='utf-8')
                             save()
@@ -362,12 +359,23 @@ async def run_learning(runner, task_id):
                                     raise
                                 event('Chart Agent', 'repair', '实际渲染失败，进行一次修正', {'error': result['render_error']})
                         save()
-                        event('Chart Agent', 'completed', '流程图实际渲染完成', {'artifact': 'diagram.svg'})
+                        event('Chart Agent', 'completed', '数据传递图实际渲染完成', {'artifact': 'diagram.svg'})
                         handoff('Chart Agent', 'Reviewer Agent', 'diagram')
                     phase('reviewing', 'Reviewer Agent', '核对结论、阅读路线、练习与图的一致性')
-                    result['review'] = await audit_learning(llm, result, snapshot, task['goal'],
-                        changed_targets=previous_result['review']['repair_targets'] if attempt else None)
+                    try:
+                        result['review'] = await audit_learning(llm, result, snapshot, task['goal'],
+                            changed_targets=previous_result['review']['repair_targets'] if attempt else None)
+                    except ModelBudgetExceeded:
+                        raise
+                    except ValueError:
+                        result['review'] = {'passed': False, 'outcome': 'invalid_audit', 'summary': '审核输出无效，未得到可用结论',
+                                            'issues': ['审核协议或引用校验失败，已有成果保留'], 'repair_targets': [], 'validation_failed': True}
+
                     review = result['review']
+                    if attempt and review['passed']:
+                        review['outcome'] = 'corrected_and_rechecked'
+                        review['summary'] = '已确认错误已局部修正并经自动复核；不代表人工验收或内容绝对正确。' + review['summary']
+                        review['prior_review'] = previous_result['review']
                     result['checks'] = {'evidence_valid': True, 'diagram_rendered': result['rendered'], 'errors': [], 'round': attempt + 1,
                                         'review_scope': 'changed_units_and_dependents' if attempt else 'all_units'}
                     save()
@@ -376,6 +384,9 @@ async def run_learning(runner, task_id):
                         if not (workspace / 'diagram.svg').is_file() or (workspace / 'diagram.mmd').read_text(encoding='utf-8') != result['mermaid']:
                             raise ValueError('交付前图表文件校验失败，不能标记成功')
                         finish('succeeded')
+                        return
+                    if review.get('unresolved_findings'):
+                        finish('needs_attention', '原疑点未重现但证据不足以关闭，争议保留；不自动通过。')
                         return
                     if review.get('validation_failed'):
                         finish('needs_attention', '审核依据未确认，已有成果保留，不自动修正或通过')
@@ -389,6 +400,8 @@ async def run_learning(runner, task_id):
     except TimeoutError:
         finish('failed', '达到学习任务时限，已有成果保留')
     except ModelBudgetExceeded:
+        prior = result.get('review')
+        result['review'] = {'passed': False, 'outcome': 'budget_exhausted', 'summary': '预算不足，审核未完成', 'issues': ['不能将未完成复核的成果当作通过'], 'repair_targets': [], 'prior_review': prior}
         if not result.get('analysis') and previous_result:
             result = previous_result
         finish('needs_attention' if result.get('analysis') else 'failed', '调用预算不足，已有成果未通过完整验收；请缩小学习范围')

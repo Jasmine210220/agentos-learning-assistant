@@ -266,13 +266,13 @@ class Chats:
                     task = await self.create_task(TaskInput(kind='learn', repository=links[0].rstrip('.'), goal=goal[:2000],
                         learner_background=background or '具备基础编程知识；具体基础未提供', ref=ref))
                     task_id = task['id']
-                    self.update(message_id, '正在读取项目，依次生成解读、学习路线、三个练习和一张流程图。', 'pending', task_id)
+                    self.update(message_id, '正在读取项目，依次生成解读、学习路线、三个练习和数据传递图（非调用时序）。', 'pending', task_id)
                     job = self.runner.jobs.get(task_id)
                     if job:
                         await asyncio.shield(job)
                     task = self.store.get(task_id)
                     summary = task['result'].get('analysis', {}).get('summary', '')
-                    verdict = '学习成果已保存。练习尚未执行，可在成果中查看阅读路线、代码依据与流程图。' if task['status'] == 'succeeded' else task.get('error') or '任务未完成，已有成果保留。'
+                    verdict = '学习成果已保存；自动审核未发现剩余问题，不代表人工验收。练习尚未执行，可查看阅读路线、代码依据与数据传递图（非执行时序）。' if task['status'] == 'succeeded' else task.get('error') or '任务未完成，已有成果保留。'
                     self.update(message_id, (summary + '\n\n' if summary else '') + verdict, task_id=task_id)
                 elif previous:
                     task = self.store.get(previous)

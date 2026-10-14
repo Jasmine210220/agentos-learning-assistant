@@ -15,6 +15,7 @@ if not configuration['key']:
 environment = dict(os.environ)
 environment['DEEPSEEK_API_KEY'] = configuration['key']
 environment['LEARNING_LIVE'] = '1'
+environment['LEARNING_MODEL'] = configuration['model']
 # Only the key is passed through the existing environment-variable mechanism.
 # Its value is not put in command arguments, logs, config files or evidence.
 try:

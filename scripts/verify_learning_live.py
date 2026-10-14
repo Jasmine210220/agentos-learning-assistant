@@ -7,6 +7,8 @@ import os
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from acceptance_metadata import provenance
+from check_learning_acceptance import structural_checks
 from backend import settings
 from backend.models import TaskInput
 from backend.store import Store
@@ -18,8 +20,10 @@ async def main():
     parser.add_argument('--output', default='test-output/learning-live-060')
     parser.add_argument('--repository', default='https://github.com/fastapi/fastapi-cli')
     parser.add_argument('--ref', default='093be9ca19f2ef44ba523aae0a98d6c9ea2e0888')
-    parser.add_argument('--goal', default='理解 src/fastapi_cli/cli.py 中 dev 函数经 _run、get_import_data 发现给定 Python 文件内的应用，到调用 uvicorn.run 为止的流程。不解释命令安装入口或 uvicorn 内部。给阅读顺序、三个练习和一张流程图。')
-    parser.add_argument('--background', default='会 Python 基础，不熟悉 FastAPI 和命令行应用发现机制')
+    spec = json.loads((Path(__file__).resolve().parents[1]/'tests/fixtures/fastapi-cli.json').read_text(encoding='utf-8'))
+    parser.add_argument('--goal', default=spec['goal'])
+    parser.add_argument('--background', default=spec['background'])
+    parser.add_argument('--structural-only', action='store_true', help='Exit 0 means structural checks only; content acceptance remains pending')
     args = parser.parse_args()
     source_hashes = {str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in Path('backend').glob('*.py')}
     if (Path(args.output) / 'evidence.json').exists():
@@ -41,12 +45,18 @@ async def main():
         await asyncio.sleep(2)
     await job
     final = store.get(task['id'])
-    (store.root / 'evidence.json').write_text(json.dumps({'real_model': True, 'real_github': True, 'source_hashes': source_hashes, 'task': final,
+    snapshot_path = store.workspace(task['id'])/'snapshot.json'
+    snapshot = json.loads(snapshot_path.read_text(encoding='utf-8')) if snapshot_path.exists() else {}
+    checks = structural_checks(final, store.events(task['id']), snapshot, store.workspace(task['id']))
+    (store.root / 'evidence.json').write_text(json.dumps({'kind': 'real_complete_learning_task', 'provenance': provenance(), 'model':settings.current()['model'], 'input':vars(args), 'expected_facts':spec['expected_facts'], 'structural_checks':checks, 'content_acceptance':'pending_explicit_source_review', 'real_model': True, 'real_github': True, 'source_hashes': source_hashes, 'task': final,
         'events': store.events(task['id'])}, ensure_ascii=False, indent=2), encoding='utf-8')
     print(json.dumps({'id': task['id'], 'status': final['status'], 'error': final['error'], 'usage': final['usage']}, ensure_ascii=False))
     store.db.close()
-    if final['status'] != 'succeeded':
+    if not all(checks.values()):
         raise SystemExit(1)
+    if not args.structural_only:
+        print('Structural checks passed; content review required. Run check_learning_acceptance.py with a hash-bound manual record.')
+        raise SystemExit(2)
 
 
 if __name__ == '__main__':
