@@ -92,7 +92,7 @@ def create_app(root=None, token=None, runner_factory=Runner):
 
     @app.get("/health", dependencies=[Depends(authorize)])
     def health():
-        return {"ok": True, **settings.public(), "version": "0.6.10", "active_chats": len(app.state.chats.jobs)+len(app.state.runtime.jobs), "limits": {"calls": MAX_CALLS, "tokens": MAX_TOTAL_TOKENS, "seconds": 600}}
+        return {"ok": True, **settings.public(), "version": "0.6.11", "active_chats": len(app.state.chats.jobs)+len(app.state.runtime.jobs), "limits": {"calls": MAX_CALLS, "tokens": MAX_TOTAL_TOKENS, "seconds": 600}}
 
     @app.get("/tasks", dependencies=[Depends(authorize)])
     def tasks(): return store.list()

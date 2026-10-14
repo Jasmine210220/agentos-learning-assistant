@@ -175,3 +175,11 @@ def test_non_python_and_invalid_source_do_not_invent_contracts():
     assert source_facts(snapshot('this is not valid Python !'),'build')==[]
     snap=snapshot('def build():\n    return Result(text=name)\n');snap['files'][0]['path']='demo.txt'
     assert source_facts(snap,'build')==[]
+
+
+def test_init_filename_is_not_an_ambiguous_function_target():
+    code='class Error:\n    def __init__(self):\n        pass\ndef build():\n    return Result(text=name, path=parent)\n'
+    facts=source_facts(snapshot(code),'理解 build 中 __init__.py 特殊处理')
+    assert next(f for f in facts if f['name']=='build')['coverage_required']
+    with pytest.raises(ValueError,match='path'):
+        validate_return_fields(diagram('text'),facts)

@@ -4,7 +4,7 @@ import re
 
 
 def source_facts(snapshot, goal=''):
-    facts, requested_functions = [], []
+    facts, requested_functions = [], {}
     for file in snapshot.get('files', []):
         if not file['path'].endswith('.py') or 'content' not in file:
             continue
@@ -37,10 +37,10 @@ def source_facts(snapshot, goal=''):
             header_end = max(node.lineno, node.body[0].lineno-1)
             if not visible(node.lineno, header_end):
                 continue
-            requested = bool(re.search(r'(?<!\w)' + re.escape(node.name) + r'(?!\w)', goal))
+            requested = bool(re.search(r'(?<!\w)' + re.escape(node.name) + r'(?!\w|\.py\b)', goal))
             identity = (file['path'], node.lineno)
             if requested:
-                requested_functions.append(identity)
+                requested_functions.setdefault(node.name, []).append(identity)
             returns = [r for stmt in node.body for r in direct(stmt) if isinstance(r, ast.Return)]
             full = visible(node.lineno, node.end_lineno)
             for returned in returns:
@@ -60,11 +60,10 @@ def source_facts(snapshot, goal=''):
                     fields=fields, requested=requested, coverage_required=requested and not reason,
                     coverage_note=reason or '仅检查显式字段覆盖，不验证数据关系或运行类型',
                     identity_evidence=evidence(node.lineno,header_end), evidence=evidence(returned.lineno,returned.end_lineno)))
-    if len(requested_functions)>1:
-        for fact in facts:
-            if fact.get('requested'):
-                fact['coverage_required']=False
-                fact['coverage_note']='目标匹配多个函数，仅展示分别记录，不强制合并字段'
+    for fact in facts:
+        if fact.get('requested') and len(requested_functions.get(fact['name'], []))>1:
+            fact['coverage_required']=False
+            fact['coverage_note']='目标函数名匹配多个定义，仅展示分别记录，不强制合并字段'
     return facts
 
 
